@@ -1,0 +1,182 @@
+import pandas as pd
+import numpy as np
+from openpyxl import load_workbook
+from datetime import date, datetime, timedelta
+import matplotlib.pyplot as plt
+
+#define report style and parameter
+report_stat = input('Choose Report Data (General/Cleaned) - ') #choose style of reporting
+report_type = input('Choose Report Type (Category/Volume) - ')
+
+#define the date of report ending and interval of checking
+day_check = input('Enter date for Checking in the form yyyy-mm-dd: ')
+day_interval = input('Interval? - ')
+
+if day_check:
+     date_current = datetime.strptime(day_check, '%Y-%m-%d')
+else:
+     date_current = date.today()
+if day_interval:
+    day_delta_lastweek = timedelta(days = int(day_interval))
+else:
+    day_delta_lastweek = timedelta(days = 7) #standard frequency
+
+if report_type == 'Category':
+    day_compared = input('Enter date for Comparison in the form yyyy-mm-dd (Default compare last week): ')
+    if day_compared:
+        date_compared = datetime.strptime(day_compared, '%Y-%m-%d')
+    else:
+        date_compared = date_current - day_delta_lastweek
+elif report_type == 'Volume':
+    date_beginning = datetime.strptime('2024-01-15', '%Y-%m-%d') #define earliest date and then append list until end of report
+    date_points_list = [date_beginning, date_current]
+    date_points = date_current - day_delta_lastweek
+    while date_points > date_beginning:
+        date_points_list.append(date_points)
+        date_points = date_points - day_delta_lastweek #output date_point_list will have a list of all dates used to collect data
+date_points_list = sorted(date_points_list) #ensure list in ascending order
+
+def drop_weekends(dates): #remove weekends
+    return [date for date in dates if date.weekday() < 5]
+date_points_list = drop_weekends(date_points_list)
+
+file_path = r'Z:\RCOE-RSG-Manchester\New Folder Structure\ADM\2. Feed Review\ERU4\\'
+mapping_file_loc = r'Z:\RCOE-RSG-Manchester\New Folder Structure\ADM\2. Feed Review\Allocation\Feed Review Staff Allocation.xlsx'
+mapping_df = pd.read_excel(mapping_file_loc)
+mapping_df = mapping_df[(mapping_df['Feed review '].str.contains('INST') == False)]
+mapping_list = mapping_df['Feed review '].tolist()
+prompt_remove = input('Any Feeds to Ignore? (y/n) ')
+remove_list = []
+while prompt_remove == 'y':
+    remove_list.append(input('Feeds to ignore (one at a time): ')) 
+    prompt_remove = input('Any more? (y/n) ')
+
+for removal in remove_list:
+    mapping_list.remove(removal)
+
+missing_file = []
+month_map = {
+     "01": "01. Jan", 
+     "02": "02. Feb", 
+     "03": "03. Mar", 
+     "04": "04. Apr", 
+     "05": "05. May", 
+     "06": "06. Jun", 
+     "07": "07. Jul", 
+     "08": "08. Aug", 
+     "09": "09. Sep", 
+     "10": "10. Oct", 
+     "11": "11. Nov", 
+     "12": "12. Dec" 
+     }
+
+def access_files(cat_code, date, dash):
+        date_yyyy = str(datetime.strftime(date, '%Y'))
+        date_mm = str(datetime.strftime(date, '%m'))
+        date_month_xxmm = month_map[date_mm]
+        cat_code_split = cat_code.split(' - ')
+        cat_code_file = cat_code_split[1]
+        date_ddmmyyyy = date.strftime('%d.%m.%Y')
+        file_name = 'Cash Missing Feed Review - ' + cat_code_file + dash + date_ddmmyyyy
+        full_file = file_path + cat_code + '\\' + date_yyyy + '\\' + date_month_xxmm + '\\' + file_name + '.xlsx'
+        full_file_df = pd.read_excel(full_file, sheet_name = 1)
+        if report_stat == 'Cleaned':
+            header_to_check = 'Set ID'
+            if header_to_check in full_file_df.columns:
+                full_file_df = full_file_df.loc[(full_file_df.iloc[:, 16].str.contains('Upon Movement') == False)]
+            else:
+                full_file_df = full_file_df.loc[(full_file_df.iloc[:, 7].str.contains('Upon Movement') == False)]
+        missing_feed_count = full_file_df.iloc[:, 1].count()
+        return missing_feed_count
+
+def execution_category(date_run, missing, timing, dash_poss):
+    error = 0
+    run = 0
+    missing_cat = []
+    missing_count = []
+    for cat_code in mapping_list:
+        try:
+            missing_feed_count = access_files(cat_code, date_run, dash_poss)
+            missing_cat.append(cat_code)
+            missing_count.append(missing_feed_count)
+            run += 1
+        except Exception as e:
+            run += 1
+            error += 1
+            print(e)
+            missing_file.append(cat_code)
+    list_of_data = list(zip(missing_cat, missing_count))
+    missing_feed_df = pd.DataFrame(list_of_data, columns = ['Category Code', missing])
+    missing_feed_df[timing] = date_run
+    print('Run: ' + str(run) + '    Error: ' + str(error))
+    return missing_feed_df
+
+def execution_volume(dash_poss):
+    missing_count_volume_list = []
+    for dates in date_points_list:
+        error = 0
+        run = 0
+        missing_count = []
+        for cat_code in mapping_list:
+            try:
+                missing_feed_count = access_files(cat_code, dates, dash_poss)
+                missing_count.append(missing_feed_count)
+                run += 1
+            except Exception as e:
+                run += 1
+                error += 1
+                print(e)
+                missing_file.append(cat_code)
+        print('Run: ' + str(run) + '    Error: ' + str(error))
+        missing_count_volume = np.sum(missing_count)
+        missing_count_volume_list.append(missing_count_volume)
+    list_of_volume = list(zip(date_points_list, missing_count_volume_list))
+    feed_volume_df = pd.DataFrame(list_of_volume, columns = ['Date', 'Volume'])
+    return feed_volume_df
+
+def test_access_category(dash_possibilities):
+    data_today = execution_category(date_current, 'Current Missing Feed', 'Check Date', dash_possibilities)
+    data_lastweek = execution_category(date_compared, 'Prior Week Missing Feed', 'Prior Date', dash_possibilities)
+    merged_df = pd.merge(data_today, data_lastweek, on = 'Category Code', how = 'outer')
+    merged_df['Reduction'] = merged_df.apply(reduced_missing, axis = 1)
+    print(merged_df)
+    return merged_df
+
+def reduced_missing(merged_df):
+     reduce = merged_df['Prior Week Missing Feed'] - merged_df['Current Missing Feed']
+     return reduce
+
+#two scenarios of final depending on report type
+
+if report_type == 'Category': #uses merged_df   
+    final = test_access_category(' - ') #output merged_df
+    print(missing_file)
+    # Create the bar chart
+    plt.figure(figsize=(15, 10))
+    plt.bar(final['Category Code'], final['Reduction'], color='skyblue')
+    #plt.bar(final['Category Code'], final['Reduction'], color='green')
+    #plt.bar(final['Category Code'], final['Upon Movement'], bottom=final['Reduction'], color='yellow')
+    plt.xlabel('Category Code')
+    plt.ylabel('Reduction')
+    plt.title('Reduction for Each Category Code')
+    plt.xticks(rotation=90)  # Rotate x-axis labels for better readability
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.show()
+elif report_type == 'Volume':
+    final = execution_volume(' - ')
+    # Create the line graph
+    plt.figure(figsize=(10, 6))
+    plt.plot(final['Date'], final['Volume'], marker='o')
+    plt.title('Volume of Missing Feed Over Time')
+    plt.xlabel('Date')
+    plt.ylabel('Volume of Missing Feed')
+    plt.grid(True)
+    plt.show()
+
+report_file = input('Save report as? ')
+if report_file:
+    report_title = file_path + report_file + '.xlsx'
+    final.to_excel(report_title, index = False)
+else:
+    print('No reports Saved')
+    exit()
